@@ -2,7 +2,8 @@
 // Cloudflare 路由 ek21.com/news* → 本 Worker，子網域 news.ek21.com 轉址到 ek21.com/news
 export const BASE = '/news';
 
-// 文章頁內文最多顯示的字數（只算文字）；資料庫仍保存完整內文
+// 文章頁內文最多顯示的字數（只算文字）；資料庫仍保存完整內文。
+// 來源設有 fullText: true（RSS 本身提供全文）時不受此限制，顯示全文。
 export const EXCERPT_CHARS = 300;
 
 // 子網域 → 主網域（子網域以 Custom Domain 綁在本 Worker，進來後轉址到主網域的 /news）
@@ -37,6 +38,8 @@ export const SOURCES = [
     id: 'taiwanhot',
     name: '台灣好新聞',
     home: 'https://www.taiwanhot.net/',
+    // RSS 提供全文，文章頁顯示全文
+    fullText: true,
     // 同一篇在 RSS 與首頁的網址不同（/news/1149490/… 與 /news/focus/1149490/…），以文章編號去重
     dedupeById: true,
     // 這幾個 RSS 附完整內文、每個約 250KB，拆成各自的排程工作
@@ -67,6 +70,8 @@ export const SOURCES = [
     id: 'innews',
     name: '引新聞',
     home: 'https://innews.com.tw/',
+    // RSS 提供全文，文章頁顯示全文
+    fullText: true,
     feeds: [{ url: 'https://innews.com.tw/feed/', type: 'rss' }],
   },
   {

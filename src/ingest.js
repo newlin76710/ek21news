@@ -215,10 +215,16 @@ export function needsRefresh(a, now = Date.now()) {
 /** 抓文章頁、擷取全文並存檔。重抓失敗時保留原本的內容。回傳目前的全文（可能為 null） */
 export async function fetchContent(db, article) {
   let content = null;
+  const info = {};
   try {
-    content = await extractFromUrl(article.url);
+    content = await extractFromUrl(article.url, info);
   } catch {}
   const now = Date.now();
+  // 沒有摘要的文章（東森、三立的新聞索引不附摘要），用頁面的 og:description 補上
+  if (!article.summary && info.description) {
+    article.summary = info.description.slice(0, 400);
+    await db.prepare('UPDATE articles SET summary = ?1 WHERE id = ?2').bind(article.summary, article.id).run();
+  }
   if (content) {
     await db
       .prepare('UPDATE articles SET content = ?1, content_status = 1, content_at = ?2 WHERE id = ?3')
@@ -238,7 +244,7 @@ export async function prefillContent(db, limit = 6) {
   const now = Date.now();
   const { results } = await db
     .prepare(
-      `SELECT id, url, content FROM articles
+      `SELECT id, url, summary, content FROM articles
        WHERE content_status = 0
           OR (content_status = 1 AND published_at > ?1 AND content_at < ?2 AND length(content) < ?3)
           OR (content_status = 2 AND published_at > ?4 AND content_at < ?5)

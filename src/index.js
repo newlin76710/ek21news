@@ -186,11 +186,14 @@ async function articlePage(env, url, id) {
     publisher: { '@type': 'Organization', name: env.SITE_NAME || '尋夢新聞' },
     mainEntityOfPage: `${url.origin}${BASE}/article/${a.id}`,
   };
-  // 內文最多顯示 EXCERPT_CHARS 字，文末附原文網址
+  // 內文最多顯示 EXCERPT_CHARS 字（RSS 提供全文的來源顯示全文），文末附原文網址
+  const full = s?.fullText === true;
   const excerpt = a.content
-    ? excerptHtml(a.content, EXCERPT_CHARS).html
+    ? full
+      ? a.content
+      : excerptHtml(a.content, EXCERPT_CHARS).html
     : a.summary
-      ? `<p>${esc(a.summary.slice(0, EXCERPT_CHARS))}</p>`
+      ? `<p>${esc(full ? a.summary : a.summary.slice(0, EXCERPT_CHARS))}</p>`
       : '';
   let shownUrl = a.url;
   try {

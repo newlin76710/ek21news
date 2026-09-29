@@ -82,7 +82,7 @@ function pickSrc(el) {
 }
 
 /** 依規則串流解析 Response，回傳內文區塊 */
-async function collect(response, rule, baseUrl) {
+async function collect(response, rule, baseUrl, info = {}) {
   let rootIdx = 0;
   const blocks = [];
   let cur = null;
@@ -137,6 +137,12 @@ async function collect(response, rule, baseUrl) {
       },
     });
   }
+  // 頁面描述：全文擷取不到時（例如影音新聞頁沒有文字段落）拿來當摘要
+  rw.on('meta[property="og:description"]', {
+    element(el) {
+      info.description = decodeEntities(el.getAttribute('content') || '').trim();
+    },
+  });
   await rw.transform(response).arrayBuffer();
 
   // 頁面上若有多個符合的容器，取文字最多的那個
@@ -240,8 +246,8 @@ export async function extractFromFragment(html, baseUrl) {
   return toHtml(await collect(res, FRAGMENT_RULE, baseUrl), FRAGMENT_RULE);
 }
 
-/** 抓文章頁並擷取全文 */
-export async function extractFromUrl(url) {
+/** 抓文章頁並擷取全文；info.description 會填入頁面的 og:description */
+export async function extractFromUrl(url, info = {}) {
   const rule = ruleFor(url);
   if (!rule) return null;
   const res = await fetch(url, {
@@ -250,5 +256,5 @@ export async function extractFromUrl(url) {
     redirect: 'follow',
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return toHtml(await collect(res, rule, res.url || url), rule);
+  return toHtml(await collect(res, rule, res.url || url, info), rule);
 }
