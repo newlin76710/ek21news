@@ -1,4 +1,4 @@
-import { CATEGORIES, CATEGORY_MAP, SOURCE_MAP } from './config.js';
+import { BASE, CATEGORIES, CATEGORY_MAP, SOURCE_MAP, SUBDOMAIN_TO_APEX } from './config.js';
 import { JOBS, fetchContent, jobsFor, runJob, twDay } from './ingest.js';
 import { extractFromUrl } from './extract.js';
 import { card, dayLabel, empty, esc, layout, listItem, pager, row, sectionHead, sidebar } from './render.js';
@@ -56,7 +56,7 @@ async function home(env) {
         i % 2 === 0
           ? `<div class="grid">${items.slice(0, 4).map((a) => card(a)).join('')}</div>`
           : `<div class="split">${card(items[0], { showSummary: true })}<ul>${items.slice(1, 6).map(row).join('')}</ul></div>`;
-      return `<section class="sec">${sectionHead(c.name, `/category/${c.slug}`, c.color)}${body}</section>`;
+      return `<section class="sec">${sectionHead(c.name, `${BASE}/category/${c.slug}`, c.color)}${body}</section>`;
     })
     .join('');
 
@@ -100,7 +100,7 @@ async function categoryPage(env, url, slug) {
     where: 'WHERE category = ?1',
     args: [slug],
     active: slug,
-    base: `/category/${slug}`,
+    base: `${BASE}/category/${slug}`,
   });
 }
 
@@ -108,35 +108,35 @@ async function sourcePage(env, url, id) {
   const s = SOURCE_MAP[id];
   if (!s) return notFound(env);
   const cat = url.searchParams.get('category');
-  const chips = `<div class="chips" style="margin-bottom:18px"><a href="/source/${id}"${!cat ? ' class="on"' : ''}>全部</a>${CATEGORIES.map(
-    (c) => `<a href="/source/${id}?category=${c.slug}"${cat === c.slug ? ' class="on"' : ''}>${c.name}</a>`,
+  const chips = `<div class="chips" style="margin-bottom:18px"><a href="${BASE}/source/${id}"${!cat ? ' class="on"' : ''}>全部</a>${CATEGORIES.map(
+    (c) => `<a href="${BASE}/source/${id}?category=${c.slug}"${cat === c.slug ? ' class="on"' : ''}>${c.name}</a>`,
   ).join('')}</div>`;
   return listPage(env, url, {
     title: s.name,
     subtitle: `來自 ${s.name}（${new URL(s.home).hostname}）的最新新聞`,
     where: CATEGORY_MAP[cat] ? 'WHERE source = ?1 AND category = ?2' : 'WHERE source = ?1',
     args: CATEGORY_MAP[cat] ? [id, cat] : [id],
-    base: `/source/${id}`,
+    base: `${BASE}/source/${id}`,
     pre: chips,
   });
 }
 
 async function searchPage(env, url) {
   const term = (url.searchParams.get('q') || '').trim().slice(0, 50);
-  if (!term) return listPage(env, url, { title: '搜尋', subtitle: '請輸入關鍵字', where: 'WHERE 0', args: [], base: '/search' });
+  if (!term) return listPage(env, url, { title: '搜尋', subtitle: '請輸入關鍵字', where: 'WHERE 0', args: [], base: `${BASE}/search` });
   const like = `%${term.replace(/[%_\\]/g, (c) => '\\' + c)}%`;
   return listPage(env, url, {
     title: `「${term}」的搜尋結果`,
     where: "WHERE title LIKE ?1 ESCAPE '\\' OR summary LIKE ?1 ESCAPE '\\'",
     args: [like],
-    base: '/search',
+    base: `${BASE}/search`,
   });
 }
 
 async function dailyIndex(env) {
   const days = await all(env, 'SELECT day, COUNT(*) AS n FROM articles GROUP BY day ORDER BY day DESC LIMIT 60');
   const body = `<div class="page-h"><h1>每日新聞</h1><p>每天自動整理當日新聞，依分類編成一份日報。</p></div>
-${days.length ? `<div class="days">${days.map((d) => `<a href="/daily/${d.day}"><b>${esc(dayLabel(d.day))}</b><span>共 ${d.n} 則新聞</span></a>`).join('')}</div>` : empty()}`;
+${days.length ? `<div class="days">${days.map((d) => `<a href="${BASE}/daily/${d.day}"><b>${esc(dayLabel(d.day))}</b><span>共 ${d.n} 則新聞</span></a>`).join('')}</div>` : empty()}`;
   return layout(env, { title: '每日新聞', body, active: 'daily' });
 }
 
@@ -153,7 +153,7 @@ async function dailyPage(env, day) {
       const items = groups[c.slug];
       const withImg = items.filter((a) => a.image).slice(0, 4);
       const rest = items.filter((a) => !withImg.includes(a));
-      return `<section class="sec" id="${c.slug}">${sectionHead(`${c.name}（${items.length}）`, `/category/${c.slug}`, c.color)}
+      return `<section class="sec" id="${c.slug}">${sectionHead(`${c.name}（${items.length}）`, `${BASE}/category/${c.slug}`, c.color)}
 ${withImg.length ? `<div class="grid">${withImg.map((a) => card(a)).join('')}</div>` : ''}
 ${rest.length ? `<ul class="list" style="margin-top:12px;background:var(--card);border-radius:12px;padding:4px 16px">${rest.map(listItem).join('')}</ul>` : ''}</section>`;
     })
@@ -161,7 +161,7 @@ ${rest.length ? `<ul class="list" style="margin-top:12px;background:var(--card);
   const prev = new Date(Date.parse(day + 'T00:00:00Z') - 86400_000).toISOString().slice(0, 10);
   const next = new Date(Date.parse(day + 'T00:00:00Z') + 86400_000).toISOString().slice(0, 10);
   const body = `<div class="page-h"><h1>${esc(dayLabel(day))} 新聞日報</h1><p>共 ${rows.length} 則新聞</p></div>
-${toc}${sections}<nav class="pager"><a href="/daily/${prev}">‹ 前一天</a><a href="/daily">所有日報</a>${next <= twDay(Date.now()) ? `<a href="/daily/${next}">後一天 ›</a>` : '<span></span>'}</nav>`;
+${toc}${sections}<nav class="pager"><a href="${BASE}/daily/${prev}">‹ 前一天</a><a href="${BASE}/daily">所有日報</a>${next <= twDay(Date.now()) ? `<a href="${BASE}/daily/${next}">後一天 ›</a>` : '<span></span>'}</nav>`;
   return layout(env, { title: `${dayLabel(day)} 新聞日報`, description: `${dayLabel(day)}新聞彙整，共 ${rows.length} 則。`, body, active: 'daily' });
 }
 
@@ -184,7 +184,7 @@ async function articlePage(env, url, id) {
     datePublished: published,
     image: a.image ? [a.image] : undefined,
     publisher: { '@type': 'Organization', name: env.SITE_NAME || '尋夢新聞' },
-    mainEntityOfPage: `${url.origin}/news/${a.id}`,
+    mainEntityOfPage: `${url.origin}${BASE}/article/${a.id}`,
   };
   // 全文裡已有圖片時不另外放封面，避免同一張圖出現兩次
   const showCover = a.image && !(a.content && a.content.includes('<figure>'));
@@ -195,19 +195,19 @@ async function articlePage(env, url, id) {
       : '';
   const body = `<div class="layout"><div>
 <article class="article">
-  <a class="tag" href="/category/${a.category}" style="--c:${c?.color}">${esc(c?.name)}</a>
+  <a class="tag" href="${BASE}/category/${a.category}" style="--c:${c?.color}">${esc(c?.name)}</a>
   <h1>${esc(a.title)}</h1>
   <div class="meta"><time datetime="${published}">${new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', dateStyle: 'long', timeStyle: 'short' }).format(a.published_at)}</time></div>
   ${showCover ? `<div class="cover thumb"><img src="${esc(a.image)}" alt="${esc(a.title)}" referrerpolicy="no-referrer" onerror="this.parentNode.remove()"></div>` : ''}
   ${bodyHtml}
   <p class="note">本文標題與摘要取自${esc(s?.name)}公開資訊，完整內容與版權屬原媒體所有。</p>
 </article>
-${related.length ? `<section class="sec" style="margin-top:28px">${sectionHead(`更多${c?.name}新聞`, `/category/${a.category}`, c?.color)}<div class="grid g3">${related.map((r) => card(r)).join('')}</div></section>` : ''}
+${related.length ? `<section class="sec" style="margin-top:28px">${sectionHead(`更多${c?.name}新聞`, `${BASE}/category/${a.category}`, c?.color)}<div class="grid g3">${related.map((r) => card(r)).join('')}</div></section>` : ''}
 </div>${sidebar({ latest: side })}</div>`;
   return layout(env, {
     title: a.title,
     description: a.summary || a.title,
-    canonical: `${url.origin}/news/${a.id}`,
+    canonical: `${url.origin}${BASE}/article/${a.id}`,
     body,
     head: `<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>${a.image ? `<meta property="og:image" content="${esc(a.image)}">` : ''}`,
   });
@@ -228,10 +228,10 @@ async function feed(env, origin, category) {
   const site = env.SITE_NAME || '尋夢新聞';
   const title = category ? `${CATEGORY_MAP[category].name} - ${site}` : site;
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0"><channel><title>${xmlEsc(title)}</title><link>${origin}/</link><description>${xmlEsc(env.SITE_TAGLINE || '')}</description><language>zh-TW</language>
+<rss version="2.0"><channel><title>${xmlEsc(title)}</title><link>${origin}${BASE}/</link><description>${xmlEsc(env.SITE_TAGLINE || '')}</description><language>zh-TW</language>
 ${rows
   .map(
-    (a) => `<item><title>${xmlEsc(a.title)}</title><link>${origin}/news/${a.id}</link><guid isPermaLink="false">${a.id}</guid><pubDate>${new Date(a.published_at).toUTCString()}</pubDate><category>${xmlEsc(CATEGORY_MAP[a.category]?.name)}</category><description>${xmlEsc(a.summary || '')}</description>${a.image ? `<enclosure url="${xmlEsc(a.image)}" type="image/jpeg" length="0"/>` : ''}</item>`,
+    (a) => `<item><title>${xmlEsc(a.title)}</title><link>${origin}${BASE}/article/${a.id}</link><guid isPermaLink="false">${a.id}</guid><pubDate>${new Date(a.published_at).toUTCString()}</pubDate><category>${xmlEsc(CATEGORY_MAP[a.category]?.name)}</category><description>${xmlEsc(a.summary || '')}</description>${a.image ? `<enclosure url="${xmlEsc(a.image)}" type="image/jpeg" length="0"/>` : ''}</item>`,
   )
   .join('\n')}
 </channel></rss>`;
@@ -244,13 +244,13 @@ async function sitemap(env, origin) {
     all(env, 'SELECT DISTINCT day FROM articles ORDER BY day DESC LIMIT 60'),
   ]);
   const urls = [
-    `${origin}/`,
-    `${origin}/latest`,
-    `${origin}/daily`,
-    ...CATEGORIES.map((c) => `${origin}/category/${c.slug}`),
-    ...days.map((d) => `${origin}/daily/${d.day}`),
+    `${origin}${BASE}/`,
+    `${origin}${BASE}/latest`,
+    `${origin}${BASE}/daily`,
+    ...CATEGORIES.map((c) => `${origin}${BASE}/category/${c.slug}`),
+    ...days.map((d) => `${origin}${BASE}/daily/${d.day}`),
   ].map((u) => `<url><loc>${u}</loc></url>`);
-  for (const r of rows) urls.push(`<url><loc>${origin}/news/${r.id}</loc><lastmod>${new Date(r.published_at).toISOString()}</lastmod></url>`);
+  for (const r of rows) urls.push(`<url><loc>${origin}${BASE}/article/${r.id}</loc><lastmod>${new Date(r.published_at).toISOString()}</lastmod></url>`);
   return new Response(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.join('')}</urlset>`, {
     headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=900' },
   });
@@ -313,22 +313,28 @@ async function refresh(env, url) {
 
 // ─── 入口 ───────────────────────────────────────────────────────────
 
+/** 去掉 /news 前綴後的站內路徑；不在 /news 底下時回傳 null */
+function sitePath(pathname) {
+  if (pathname !== BASE && !pathname.startsWith(BASE + '/')) return null;
+  return pathname.slice(BASE.length).replace(/\/+$/, '') || '/';
+}
+
 async function route(request, env) {
   const url = new URL(request.url);
-  const path = url.pathname.replace(/\/+$/, '') || '/';
+  const path = sitePath(url.pathname);
   let m;
   if (path === '/') return home(env);
-  if (path === '/latest') return listPage(env, url, { title: '即時新聞', subtitle: '最新新聞，依時間排序', where: '', args: [], active: 'latest', base: '/latest' });
+  if (path === '/latest') return listPage(env, url, { title: '即時新聞', subtitle: '最新新聞，依時間排序', where: '', args: [], active: 'latest', base: `${BASE}/latest` });
   if ((m = path.match(/^\/category\/([a-z]+)\/feed\.xml$/)) && CATEGORY_MAP[m[1]]) return feed(env, url.origin, m[1]);
   if ((m = path.match(/^\/category\/([a-z]+)$/))) return categoryPage(env, url, m[1]);
   if ((m = path.match(/^\/source\/([a-z0-9]+)$/))) return sourcePage(env, url, m[1]);
-  if ((m = path.match(/^\/news\/([0-9a-f]{16})$/))) return articlePage(env, url, m[1]);
+  if ((m = path.match(/^\/article\/([0-9a-f]{16})$/))) return articlePage(env, url, m[1]);
   if (path === '/daily') return dailyIndex(env);
   if ((m = path.match(/^\/daily\/(\d{4}-\d{2}-\d{2})$/))) return dailyPage(env, m[1]);
   if (path === '/search') return searchPage(env, url);
   if (path === '/feed.xml' || path === '/rss') return feed(env, url.origin);
   if (path === '/sitemap.xml') return sitemap(env, url.origin);
-  if (path === '/robots.txt') return new Response(`User-agent: *\nAllow: /\nDisallow: /admin/\nSitemap: ${url.origin}/sitemap.xml\n`);
+  if (path === '/robots.txt') return new Response(`User-agent: *\nAllow: /\nDisallow: /admin/\nSitemap: ${url.origin}${BASE}/sitemap.xml\n`);
   if (path === '/api/news') return api(env, url);
   if (path === '/api/status') return status(env);
   if (path === '/admin/refresh') return refresh(env, url);
@@ -337,17 +343,28 @@ async function route(request, env) {
     const html = await extractFromUrl(url.searchParams.get('url') || '');
     return new Response(html || '(擷取失敗)', { headers: { 'content-type': 'text/plain; charset=utf-8' } });
   }
-  // 相容 ek21.com/news 的舊網址
-  if ((m = path.match(/^\/news(?:\/category\/([a-z]+))?$/))) return Response.redirect(`${url.origin}${m[1] ? `/category/${m[1]}` : '/'}`, 301);
   return notFound(env);
 }
 
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    // news.ek21.com 等子網域 → 主網域的 /news（與 dating 相同做法）
+    const apex = SUBDOMAIN_TO_APEX[url.hostname];
+    if (apex) {
+      return Response.redirect(`https://${apex}${BASE}${url.pathname === '/' ? '' : url.pathname}${url.search}`, 308);
+    }
+    const path = sitePath(url.pathname);
+    if (path === null) {
+      // workers.dev 測試網址：導到 /news
+      if (url.hostname.endsWith('.workers.dev')) return Response.redirect(`${url.origin}${BASE}${url.pathname === '/' ? '' : url.pathname}`, 302);
+      // 路由 ek21.com/news* 也會比對到 /newsletter 之類不屬於本站的路徑，交回原本的伺服器
+      return fetch(request);
+    }
     if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('method not allowed', { status: 405 });
     // 自訂網域上用 Cache API 快取頁面；workers.dev 上 Cache API 不生效也不影響功能
     const cache = caches.default;
-    const cacheable = !new URL(request.url).pathname.startsWith('/admin') && !request.url.includes('/api/status');
+    const cacheable = !path.startsWith('/admin') && path !== '/api/status';
     if (cacheable) {
       const hit = await cache.match(request);
       if (hit) return hit;

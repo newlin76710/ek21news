@@ -1,3 +1,14 @@
+// 網站掛在主網域的這個路徑下（ek21.com/news），做法與 dating 相同：
+// Cloudflare 路由 ek21.com/news* → 本 Worker，子網域 news.ek21.com 轉址到 ek21.com/news
+export const BASE = '/news';
+
+// 子網域 → 主網域（子網域以 Custom Domain 綁在本 Worker，進來後轉址到主網域的 /news）
+export const SUBDOMAIN_TO_APEX = {
+  'news.ek21.com': 'ek21.com',
+  'news.ek21.com.tw': 'ek21.com.tw',
+  'news.ek21.tw': 'ek21.tw',
+};
+
 // 網站分類。slug 沿用 ek21.com/news 的 life / politics / health / travel，再補齊其餘分類。
 export const CATEGORIES = [
   { slug: 'politics', name: '政治', color: '#2563eb' },

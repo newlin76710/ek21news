@@ -23,16 +23,17 @@
 
 ## 頁面
 
+以下路徑都在 `/news` 之下（例如 `/latest` 實際是 `ek21.com/news/latest`）。
+
 - `/` 首頁：頭條輪播格＋各分類區塊＋即時新聞側欄
 - `/latest` 即時新聞 · `/category/:slug` 分類
 - `/daily` 每日新聞日報列表 · `/daily/YYYY-MM-DD` 當日依分類整理的日報
-- `/news/:id` 單則新聞，站內直接閱讀全文
+- `/article/:id` 單則新聞，站內直接閱讀全文
 - `/search?q=` 搜尋
 - `/feed.xml`、`/category/:slug/feed.xml` RSS 輸出 · `/sitemap.xml` · `/robots.txt`
 - `/api/news?category=&source=&day=&limit=` JSON API · `/api/status` 抓取狀態
 - `/admin/refresh?token=ADMIN_TOKEN&job=all` 手動更新
 - `/admin/extract?token=ADMIN_TOKEN&url=文章網址` 測試某篇文章的全文擷取結果
-- 舊網址 `/news/category/life` 會 301 轉到 `/category/life`
 
 ## 部署
 
@@ -44,11 +45,22 @@ npm run db:init                        # 在遠端 D1 建立資料表
 npx wrangler secret put ADMIN_TOKEN    # 手動更新用的密碼
 npm run deploy
 # 部署後先手動抓一次，不用等排程：
-curl "https://ek21news.<你的子網域>.workers.dev/admin/refresh?token=<ADMIN_TOKEN>&job=all"
+curl "https://ek21.com/news/admin/refresh?token=<ADMIN_TOKEN>&job=all"
 ```
 
-要綁 `ek21.com` 的網域，在 `wrangler.toml` 加上 `routes = [{ pattern = "news.ek21.com", custom_domain = true }]`。
-綁自訂網域後頁面快取（Cache API）才會生效。
+## 網域與路由（與 dating 相同做法）
+
+網站掛在主網域的 `/news` 路徑下（`BASE`，見 `src/config.js`）：
+
+| 設定 | 內容 |
+|---|---|
+| Worker 路由（Cloudflare 後台 → 各網域 → Workers Routes） | `ek21.com/news*`、`*.ek21.com/news*`，`ek21.com.tw`、`ek21.tw` 同樣各兩條 |
+| Custom Domain（綁在 ek21news Worker） | `news.ek21.com`、`news.ek21.com.tw`、`news.ek21.tw`，程式會 308 轉址到對應主網域的 `/news/…` |
+| workers.dev | `https://ek21news.ek21.workers.dev/` 會轉到 `/news` |
+
+- 路由 `ek21.com/news*` 也會比對到 `/newsletter` 這類不屬於本站的路徑，這些請求會原封不動交回原本的伺服器。
+- 所有頁面、API、管理網址都在 `/news` 底下，例如 `/news/admin/refresh`、`/news/api/status`；文章網址是 `/news/article/<id>`。
+- 頁面快取（Cache API）只在自訂網域上生效。
 
 ## 排程
 
@@ -65,7 +77,7 @@ curl "https://ek21news.<你的子網域>.workers.dev/admin/refresh?token=<ADMIN_
 npm run db:init:local
 echo "ADMIN_TOKEN=devtoken" > .dev.vars
 npm run dev
-curl "http://localhost:8787/admin/refresh?token=devtoken&job=all"
+curl "http://localhost:8787/news/admin/refresh?token=devtoken&job=all"
 curl "http://localhost:8787/__scheduled?cron=*/3+*+*+*+*"   # 模擬排程
 ```
 

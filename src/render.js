@@ -1,4 +1,4 @@
-import { CATEGORIES, CATEGORY_MAP } from './config.js';
+import { BASE, CATEGORIES, CATEGORY_MAP } from './config.js';
 
 export const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -23,7 +23,7 @@ export const dayLabel = (day) => fmtDay.format(new Date(`${day}T12:00:00+08:00`)
 
 const catName = (slug) => CATEGORY_MAP[slug]?.name || '新聞';
 const catColor = (slug) => CATEGORY_MAP[slug]?.color || '#f00069';
-const articleHref = (a) => `/news/${a.id}`;
+const articleHref = (a) => `${BASE}/article/${a.id}`;
 
 function thumb(a, cls = '') {
   if (a.image) {
@@ -33,7 +33,7 @@ function thumb(a, cls = '') {
 }
 
 const tag = (a) =>
-  `<a class="tag" href="/category/${a.category}" style="--c:${catColor(a.category)}">${esc(catName(a.category))}</a>`;
+  `<a class="tag" href="${BASE}/category/${a.category}" style="--c:${catColor(a.category)}">${esc(catName(a.category))}</a>`;
 
 const meta = (a) =>
   `<div class="meta"><time datetime="${new Date(a.published_at).toISOString()}">${timeAgo(a.published_at)}</time></div>`;
@@ -158,9 +158,9 @@ export function layout(env, { title, description, body, active = '', canonical =
   const site = env.SITE_NAME || '尋夢新聞';
   const fullTitle = title ? `${title} - ${site}` : `${site} - ${env.SITE_TAGLINE || ''}`;
   const desc = description || `${site}：政治、財經、社會、生活、國際、娛樂、體育、科技、健康、旅遊即時新聞，完整分類、每日自動更新。`;
-  const nav = [`<a href="/"${active === 'home' ? ' class="on"' : ''}>首頁</a>`, `<a href="/latest"${active === 'latest' ? ' class="on"' : ''}>即時</a>`]
-    .concat(CATEGORIES.map((c) => `<a href="/category/${c.slug}"${active === c.slug ? ' class="on"' : ''}>${c.name}</a>`))
-    .concat(`<a href="/daily"${active === 'daily' ? ' class="on"' : ''}>每日新聞</a>`)
+  const nav = [`<a href="${BASE}"${active === 'home' ? ' class="on"' : ''}>首頁</a>`, `<a href="${BASE}/latest"${active === 'latest' ? ' class="on"' : ''}>即時</a>`]
+    .concat(CATEGORIES.map((c) => `<a href="${BASE}/category/${c.slug}"${active === c.slug ? ' class="on"' : ''}>${c.name}</a>`))
+    .concat(`<a href="${BASE}/daily"${active === 'daily' ? ' class="on"' : ''}>每日新聞</a>`)
     .join('');
   const html = `<!doctype html>
 <html lang="zh-Hant-TW">
@@ -174,7 +174,7 @@ export function layout(env, { title, description, body, active = '', canonical =
 <meta property="og:site_name" content="${esc(site)}">
 <meta name="theme-color" content="#f00069">
 ${canonical ? `<link rel="canonical" href="${esc(canonical)}">` : ''}
-<link rel="alternate" type="application/rss+xml" title="${esc(site)}" href="/feed.xml">
+<link rel="alternate" type="application/rss+xml" title="${esc(site)}" href="${BASE}/feed.xml">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2224%22 fill=%22%23f00069%22/><text x=%2250%22 y=%2270%22 font-size=%2260%22 text-anchor=%22middle%22 fill=%22white%22 font-family=%22sans-serif%22 font-weight=%22bold%22>夢</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
@@ -184,16 +184,16 @@ ${head}
 </head>
 <body>
 <header class="top"><div class="wrap">
-  <a class="logo" href="/"><i>夢</i><span>${esc(site)}<small>${esc(env.SITE_TAGLINE || '')}</small></span></a>
+  <a class="logo" href="${BASE}"><i>夢</i><span>${esc(site)}<small>${esc(env.SITE_TAGLINE || '')}</small></span></a>
   <span class="today">${fmtDay.format(Date.now())}</span>
-  <form class="search" action="/search" role="search"><input name="q" placeholder="搜尋新聞…" aria-label="搜尋新聞"><button>搜尋</button></form>
+  <form class="search" action="${BASE}/search" role="search"><input name="q" placeholder="搜尋新聞…" aria-label="搜尋新聞"><button>搜尋</button></form>
   <button class="theme" title="切換深淺色" aria-label="切換深淺色" onclick="var d=document.documentElement,n=(d.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'))==='dark'?'light':'dark';d.dataset.theme=n;try{localStorage.setItem('theme',n)}catch(e){}">◐</button>
 </div></header>
 <nav class="nav" aria-label="新聞分類"><div class="wrap">${nav}</div></nav>
 <main><div class="wrap">${body}</div></main>
 <footer><div class="wrap">
-  <div class="cols">${CATEGORIES.map((c) => `<a href="/category/${c.slug}">${c.name}</a>`).join('')}</div>
-  <p>© ${new Date().getFullYear()} ${esc(site)} · <a href="/feed.xml">RSS</a> · <a href="/sitemap.xml">Sitemap</a></p>
+  <div class="cols">${CATEGORIES.map((c) => `<a href="${BASE}/category/${c.slug}">${c.name}</a>`).join('')}</div>
+  <p>© ${new Date().getFullYear()} ${esc(site)} · <a href="${BASE}/feed.xml">RSS</a> · <a href="${BASE}/sitemap.xml">Sitemap</a></p>
 </div></footer>
 </body>
 </html>`;
@@ -211,8 +211,8 @@ export const sectionHead = (title, href, color) =>
 
 export function sidebar({ latest = [] } = {}) {
   return `<aside>
-  ${latest.length ? `<div class="box"><h3>即時新聞</h3><ul class="list">${latest.map(listItem).join('')}</ul><p style="margin:10px 0 0"><a href="/latest" style="color:var(--blue)">看全部即時新聞 ›</a></p></div>` : ''}
-  <div class="box"><h3>新聞分類</h3><div class="chips">${CATEGORIES.map((c) => `<a href="/category/${c.slug}">${c.name}</a>`).join('')}</div></div>
+  ${latest.length ? `<div class="box"><h3>即時新聞</h3><ul class="list">${latest.map(listItem).join('')}</ul><p style="margin:10px 0 0"><a href="${BASE}/latest" style="color:var(--blue)">看全部即時新聞 ›</a></p></div>` : ''}
+  <div class="box"><h3>新聞分類</h3><div class="chips">${CATEGORIES.map((c) => `<a href="${BASE}/category/${c.slug}">${c.name}</a>`).join('')}</div></div>
 </aside>`;
 }
 
