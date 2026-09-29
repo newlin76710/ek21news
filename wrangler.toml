@@ -20,8 +20,8 @@ RETENTION_DAYS = "60"
 [[d1_databases]]
 binding = "DB"
 database_name = "ek21news"
-# 執行 `npx wrangler d1 create ek21news` 後，把輸出的 database_id 貼到這裡
-database_id = "00000000-0000-0000-0000-000000000000"
+# 由 `npx wrangler d1 create ek21news` 建立
+database_id = "60c6a640-cc5a-4ece-9ea3-b4792276e9df"
 
 [observability]
 enabled = true
