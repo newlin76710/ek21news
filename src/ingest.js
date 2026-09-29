@@ -155,7 +155,13 @@ export async function saveRows(db, rows, now = Date.now()) {
        content_at = CASE WHEN articles.content IS NULL AND excluded.content IS NOT NULL THEN excluded.content_at ELSE articles.content_at END,
        content = COALESCE(articles.content, excluded.content),
        content_status = CASE WHEN articles.content IS NOT NULL THEN articles.content_status
-                             WHEN excluded.content IS NOT NULL THEN 1 ELSE articles.content_status END`,
+                             WHEN excluded.content IS NOT NULL THEN 1 ELSE articles.content_status END
+     -- 內容沒變就不寫：D1 免費方案每天只能寫 10 萬列，每次排程重寫整份 RSS 會很快用完
+     WHERE articles.title IS NOT excluded.title
+        OR (excluded.summary IS NOT NULL AND articles.summary IS NOT excluded.summary)
+        OR (articles.image IS NULL AND excluded.image IS NOT NULL)
+        OR (?12 = 1 AND (articles.category IS NOT excluded.category OR articles.raw_category IS NOT excluded.raw_category))
+        OR (articles.content IS NULL AND excluded.content IS NOT NULL)`,
   );
   let written = 0;
   for (let i = 0; i < rows.length; i += 50) {
@@ -220,23 +226,26 @@ export async function fetchContent(db, article) {
     content = await extractFromUrl(article.url, info);
   } catch {}
   const now = Date.now();
+  const stmts = [];
   // 沒有摘要的文章（東森、三立的新聞索引不附摘要），用頁面的 og:description 補上
   if (!article.summary && info.description) {
     article.summary = info.description.slice(0, 400);
-    await db.prepare('UPDATE articles SET summary = ?1 WHERE id = ?2').bind(article.summary, article.id).run();
+    stmts.push(db.prepare('UPDATE articles SET summary = ?1 WHERE id = ?2').bind(article.summary, article.id));
   }
-  if (content) {
-    await db
-      .prepare('UPDATE articles SET content = ?1, content_status = 1, content_at = ?2 WHERE id = ?3')
-      .bind(content, now, article.id)
-      .run();
-    return content;
+  stmts.push(
+    content
+      ? db.prepare('UPDATE articles SET content = ?1, content_status = 1, content_at = ?2 WHERE id = ?3').bind(content, now, article.id)
+      : db
+          .prepare('UPDATE articles SET content_status = CASE WHEN content IS NULL THEN 2 ELSE content_status END, content_at = ?1 WHERE id = ?2')
+          .bind(now, article.id),
+  );
+  // 存檔失敗（例如超過 D1 每日寫入額度）不影響本次顯示，下次再重抓
+  try {
+    await db.batch(stmts);
+  } catch (e) {
+    console.error('fetchContent save failed', e);
   }
-  await db
-    .prepare('UPDATE articles SET content_status = CASE WHEN content IS NULL THEN 2 ELSE content_status END, content_at = ?1 WHERE id = ?2')
-    .bind(now, article.id)
-    .run();
-  return article.content || null;
+  return content || article.content || null;
 }
 
 /** 預先替最新文章擷取全文（以及重抓剛發布的短內容），讓讀者打開時不必等待 */
