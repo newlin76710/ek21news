@@ -189,6 +189,48 @@ function toHtml(blocks, rule) {
   return textLen >= 80 ? out.join('\n') : null;
 }
 
+/**
+ * 把整理好的全文截成最多 max 個字（只算文字，不算圖片）。
+ * 全文由 toHtml() 產生，每行是一個 <p>/<h2>/<li>/<figure> 或 <ul>、</ul>，所以可以逐行處理。
+ * 回傳 { html, truncated }
+ */
+export function excerptHtml(html, max = 300) {
+  const out = [];
+  let left = max;
+  let truncated = false;
+  let openList = false;
+  for (const line of (html || '').split('\n')) {
+    if (left <= 0) {
+      truncated = true;
+      break;
+    }
+    if (line === '<ul>' || line === '</ul>') {
+      openList = line === '<ul>';
+      out.push(line);
+      continue;
+    }
+    if (line.startsWith('<figure>')) {
+      out.push(line);
+      continue;
+    }
+    const m = line.match(/^<(p|h2|li)>([\s\S]*)<\/\1>$/);
+    if (!m) continue;
+    const text = decodeEntities(m[2]);
+    if (text.length <= left) {
+      out.push(line);
+      left -= text.length;
+    } else {
+      out.push(`<${m[1]}>${esc(text.slice(0, left))}…</${m[1]}>`);
+      left = 0;
+      truncated = true;
+    }
+  }
+  if (openList) out.push('</ul>');
+  // 截斷後結尾不留孤立的圖片
+  while (out.length && out[out.length - 1].startsWith('<figure>') && truncated) out.pop();
+  return { html: out.join('\n'), truncated };
+}
+
 /** 從 RSS 附的內文 HTML 擷取 */
 export async function extractFromFragment(html, baseUrl) {
   if (!html || html.length < 200) return null;

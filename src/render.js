@@ -136,6 +136,7 @@ aside h3::before{content:"";width:4px;height:18px;background:var(--pink);border-
 .content p{margin:0 0 1.1em}.content h2{font-size:21px;margin:1.6em 0 .6em;line-height:1.5}
 .content ul{margin:0 0 1.1em;padding-left:1.4em}.content li{margin:.3em 0}
 .content figure{margin:1.4em 0}.content figure img{width:100%;height:auto;border-radius:10px;background:var(--line)}
+.content .src-url{font-size:15px;color:var(--sub);word-break:break-all}.content .src-url a{color:var(--blue)}
 .content figcaption{font-size:14px;color:var(--sub);margin-top:6px;line-height:1.6}
 .btn{display:inline-block;padding:11px 24px;border-radius:999px;background:var(--blue);color:#fff;font-weight:700}.btn:hover{color:#fff;opacity:.92}
 .note{font-size:13px;color:var(--sub);margin-top:14px}

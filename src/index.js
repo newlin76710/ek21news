@@ -1,6 +1,6 @@
-import { BASE, CATEGORIES, CATEGORY_MAP, SOURCE_MAP, SUBDOMAIN_TO_APEX } from './config.js';
-import { JOBS, fetchContent, jobsFor, runJob, twDay } from './ingest.js';
-import { extractFromUrl } from './extract.js';
+import { BASE, CATEGORIES, CATEGORY_MAP, EXCERPT_CHARS, SOURCE_MAP, SUBDOMAIN_TO_APEX } from './config.js';
+import { JOBS, fetchContent, jobsFor, needsRefresh, runJob, twDay } from './ingest.js';
+import { excerptHtml, extractFromUrl } from './extract.js';
 import { card, dayLabel, empty, esc, layout, listItem, pager, row, sectionHead, sidebar } from './render.js';
 
 const PER_PAGE = 24;
@@ -166,10 +166,10 @@ ${toc}${sections}<nav class="pager"><a href="${BASE}/daily/${prev}">‹ 前一�
 }
 
 async function articlePage(env, url, id) {
-  const a = await q(env, `SELECT ${COLS}, content, content_status FROM articles WHERE id = ?1`, id).first();
+  const a = await q(env, `SELECT ${COLS}, content, content_status, content_at FROM articles WHERE id = ?1`, id).first();
   if (!a) return notFound(env);
   // 還沒擷取過全文的文章，第一次被打開時即時擷取並存檔
-  if (a.content_status === 0) a.content = await fetchContent(env.DB, a);
+  if (a.content_status === 0 || needsRefresh(a)) a.content = await fetchContent(env.DB, a);
   const [related, side] = await Promise.all([
     all(env, `SELECT ${COLS} FROM articles WHERE category = ?1 AND id != ?2 ORDER BY published_at DESC LIMIT 6`, a.category, a.id),
     latest(env, 10),
@@ -186,13 +186,20 @@ async function articlePage(env, url, id) {
     publisher: { '@type': 'Organization', name: env.SITE_NAME || '尋夢新聞' },
     mainEntityOfPage: `${url.origin}${BASE}/article/${a.id}`,
   };
-  // 全文裡已有圖片時不另外放封面，避免同一張圖出現兩次
-  const showCover = a.image && !(a.content && a.content.includes('<figure>'));
-  const bodyHtml = a.content
-    ? `<div class="content">${a.content}</div>`
+  // 內文最多顯示 EXCERPT_CHARS 字，文末附原文網址
+  const excerpt = a.content
+    ? excerptHtml(a.content, EXCERPT_CHARS).html
     : a.summary
-      ? `<div class="content"><p>${esc(a.summary)}</p></div>`
+      ? `<p>${esc(a.summary.slice(0, EXCERPT_CHARS))}</p>`
       : '';
+  let shownUrl = a.url;
+  try {
+    shownUrl = decodeURI(a.url);
+  } catch {}
+  const sourceLink = `<p class="src-url">原文網址：<a href="${esc(a.url)}" target="_blank" rel="noopener nofollow">${esc(shownUrl)}</a></p>`;
+  const bodyHtml = `<div class="content">${excerpt}${sourceLink}</div>`;
+  // 內文裡已有圖片時不另外放封面，避免同一張圖出現兩次
+  const showCover = a.image && !excerpt.includes('<figure>');
   const body = `<div class="layout"><div>
 <article class="article">
   <a class="tag" href="${BASE}/category/${a.category}" style="--c:${c?.color}">${esc(c?.name)}</a>
@@ -340,8 +347,13 @@ async function route(request, env) {
   if (path === '/admin/refresh') return refresh(env, url);
   if (path === '/admin/extract') {
     if (!env.ADMIN_TOKEN || url.searchParams.get('token') !== env.ADMIN_TOKEN) return new Response('forbidden', { status: 403 });
-    const html = await extractFromUrl(url.searchParams.get('url') || '');
-    return new Response(html || '(擷取失敗)', { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+    let html;
+    try {
+      html = (await extractFromUrl(url.searchParams.get('url') || '')) || '(擷取失敗：內容太少)';
+    } catch (e) {
+      html = `(擷取失敗：${e?.stack || e})`;
+    }
+    return new Response(html, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
   }
   return notFound(env);
 }

@@ -144,14 +144,15 @@ async function fillContentFromFeed(db, rows) {
 export async function saveRows(db, rows, now = Date.now()) {
   await fillContentFromFeed(db, rows);
   const stmt = db.prepare(
-    `INSERT INTO articles (id, url, title, summary, image, source, category, raw_category, published_at, fetched_at, day, content, content_status)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?13, CASE WHEN ?13 IS NULL THEN 0 ELSE 1 END)
+    `INSERT INTO articles (id, url, title, summary, image, source, category, raw_category, published_at, fetched_at, day, content, content_status, content_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?13, CASE WHEN ?13 IS NULL THEN 0 ELSE 1 END, CASE WHEN ?13 IS NULL THEN 0 ELSE ?10 END)
      ON CONFLICT(id) DO UPDATE SET
        title = excluded.title,
        summary = COALESCE(excluded.summary, articles.summary),
        image = COALESCE(articles.image, excluded.image),
        category = CASE WHEN ?12 = 1 THEN excluded.category ELSE articles.category END,
        raw_category = CASE WHEN ?12 = 1 THEN excluded.raw_category ELSE articles.raw_category END,
+       content_at = CASE WHEN articles.content IS NULL AND excluded.content IS NOT NULL THEN excluded.content_at ELSE articles.content_at END,
        content = COALESCE(articles.content, excluded.content),
        content_status = CASE WHEN articles.content IS NOT NULL THEN articles.content_status
                              WHEN excluded.content IS NOT NULL THEN 1 ELSE articles.content_status END`,
@@ -194,23 +195,56 @@ export async function enrichImages(db, limit = 15) {
 }
 
 /** 抓文章頁、擷取全文並存檔。回傳整理好的 HTML，失敗回傳 null */
+// 即時新聞剛發布時常只有一兩段，之後才補完：發布 6 小時內、內容偏短的文章，
+// 距上次擷取超過 20 分鐘就重抓一次
+const REFRESH_WINDOW = 6 * HOUR;
+const REFRESH_EVERY = 20 * 60_000;
+const SHORT_CONTENT = 1500; // 全文 HTML 長度（約 400 字）
+// 擷取失敗時（對方網站回應慢，或像自由時報會對 Cloudflare 的請求不定時回 403），
+// 發布 24 小時內每 2 小時重試一次，不頻繁打擾對方網站；失敗期間頁面顯示 RSS 摘要
+const RETRY_WINDOW = 24 * HOUR;
+const RETRY_EVERY = 2 * HOUR;
+
+export function needsRefresh(a, now = Date.now()) {
+  const since = now - (a.content_at || 0);
+  const age = now - a.published_at;
+  if (a.content_status === 2) return age < RETRY_WINDOW && since > RETRY_EVERY;
+  return a.content_status === 1 && age < REFRESH_WINDOW && since > REFRESH_EVERY && (a.content || '').length < SHORT_CONTENT;
+}
+
+/** 抓文章頁、擷取全文並存檔。重抓失敗時保留原本的內容。回傳目前的全文（可能為 null） */
 export async function fetchContent(db, article) {
   let content = null;
   try {
     content = await extractFromUrl(article.url);
   } catch {}
+  const now = Date.now();
+  if (content) {
+    await db
+      .prepare('UPDATE articles SET content = ?1, content_status = 1, content_at = ?2 WHERE id = ?3')
+      .bind(content, now, article.id)
+      .run();
+    return content;
+  }
   await db
-    .prepare('UPDATE articles SET content = ?1, content_status = ?2 WHERE id = ?3')
-    .bind(content, content ? 1 : 2, article.id)
+    .prepare('UPDATE articles SET content_status = CASE WHEN content IS NULL THEN 2 ELSE content_status END, content_at = ?1 WHERE id = ?2')
+    .bind(now, article.id)
     .run();
-  return content;
+  return article.content || null;
 }
 
-/** 預先替最新文章擷取全文，讓讀者打開時不必等待 */
+/** 預先替最新文章擷取全文（以及重抓剛發布的短內容），讓讀者打開時不必等待 */
 export async function prefillContent(db, limit = 6) {
+  const now = Date.now();
   const { results } = await db
-    .prepare('SELECT id, url FROM articles WHERE content_status = 0 ORDER BY published_at DESC LIMIT ?1')
-    .bind(limit * 3)
+    .prepare(
+      `SELECT id, url, content FROM articles
+       WHERE content_status = 0
+          OR (content_status = 1 AND published_at > ?1 AND content_at < ?2 AND length(content) < ?3)
+          OR (content_status = 2 AND published_at > ?4 AND content_at < ?5)
+       ORDER BY published_at DESC LIMIT ?6`,
+    )
+    .bind(now - REFRESH_WINDOW, now - REFRESH_EVERY, SHORT_CONTENT, now - RETRY_WINDOW, now - RETRY_EVERY, limit * 3)
     .all();
   const todo = results.filter((r) => ruleFor(r.url)).slice(0, limit);
   const got = await Promise.all(todo.map((r) => fetchContent(db, r)));

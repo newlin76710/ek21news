@@ -2,6 +2,9 @@
 // Cloudflare 路由 ek21.com/news* → 本 Worker，子網域 news.ek21.com 轉址到 ek21.com/news
 export const BASE = '/news';
 
+// 文章頁內文最多顯示的字數（只算文字）；資料庫仍保存完整內文
+export const EXCERPT_CHARS = 300;
+
 // 子網域 → 主網域（子網域以 Custom Domain 綁在本 Worker，進來後轉址到主網域的 /news）
 export const SUBDOMAIN_TO_APEX = {
   'news.ek21.com': 'ek21.com',

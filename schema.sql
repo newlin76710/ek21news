@@ -13,7 +13,9 @@ CREATE TABLE IF NOT EXISTS articles (
   img_tried    INTEGER NOT NULL DEFAULT 0,
   -- 整理過的全文 HTML；content_status：0 未擷取、1 成功、2 失敗
   content        TEXT,
-  content_status INTEGER NOT NULL DEFAULT 0
+  content_status INTEGER NOT NULL DEFAULT 0,
+  -- 上次擷取全文的時間（剛發布的快訊會再重抓，見 src/ingest.js needsRefresh）
+  content_at     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_articles_pub ON articles (published_at DESC);
