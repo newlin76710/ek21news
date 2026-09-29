@@ -1,0 +1,27 @@
+name = "ek21news"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+# 每 3 分鐘觸發一次排程。預設為「輪替模式」：每次只跑一個抓取工作，
+# 讓免費方案（每次呼叫 10ms CPU）也跑得動；共 11 個工作，約 33 分鐘把所有來源更新一輪。
+# 修改間隔時，也要一併修改 src/ingest.js 的 CRON_MINUTES。
+[triggers]
+crons = ["*/3 * * * *"]
+
+[vars]
+SITE_NAME = "尋夢新聞"
+SITE_TAGLINE = "全台最大的交友聊天室《尋夢園》旗下媒體"
+# rotate = 每次排程只跑一個工作（免費方案建議）；all = 每次排程全部抓（付費方案）
+FETCH_MODE = "rotate"
+# 保留天數
+RETENTION_DAYS = "60"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ek21news"
+# 執行 `npx wrangler d1 create ek21news` 後，把輸出的 database_id 貼到這裡
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[observability]
+enabled = true

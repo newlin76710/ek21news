@@ -1,0 +1,16 @@
+{
+  "name": "ek21news",
+  "version": "1.0.0",
+  "private": true,
+  "description": "尋夢新聞 — 聚合台灣各家新聞 RSS，跑在 Cloudflare Workers + D1 的 serverless 新聞網站",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "db:init:local": "wrangler d1 execute ek21news --local --file=./schema.sql",
+    "db:init": "wrangler d1 execute ek21news --remote --file=./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^4.143.0"
+  }
+}
