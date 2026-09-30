@@ -40,7 +40,9 @@ export const SOURCES = [
     home: 'https://www.taiwanhot.net/',
     // RSS 提供全文，文章頁顯示全文
     fullText: true,
-    // 同一篇在 RSS 與首頁的網址不同（/news/1149490/… 與 /news/focus/1149490/…），以文章編號去重
+    // 只用 RSS 提供的內容：不抓對方網站（首頁、文章頁、og:image）
+    rssOnly: true,
+    // 以文章編號去重（沿用既有文章的 id）
     dedupeById: true,
     // 這幾個 RSS 附完整內文、每個約 250KB，拆成各自的排程工作
     splitFeeds: true,
@@ -50,8 +52,6 @@ export const SOURCES = [
       { url: 'https://taiwanhot.net/rss/b5bbe67a', type: 'rss', hint: 'life' },
       { url: 'https://taiwanhot.net/rss/ed57970a', type: 'rss', hint: 'health' },
       { url: 'https://taiwanhot.net/rss/fa24f9a3', type: 'rss', hint: 'travel' },
-      // 首頁補抓社會、財經、地方等沒有 RSS 的頻道
-      { url: 'https://www.taiwanhot.net/', type: 'taiwanhot' },
     ],
   },
   {

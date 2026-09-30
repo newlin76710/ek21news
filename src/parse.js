@@ -126,47 +126,6 @@ export function parseNewsSitemap(xml) {
   return items;
 }
 
-/** 台灣好新聞首頁（沒有 RSS，但每則連結都帶有標題與頻道名稱） */
-export function parseTaiwanHot(html) {
-  const byId = new Map();
-  const chunks = html.split(/class="row news-item"/).slice(1);
-  const linkRe = /href="(https:\/\/www\.taiwanhot\.net\/news\/focus\/(\d+)\/[^"\/]+\/(\d+)\/([^"\/]+))"/g;
-  for (const chunk of chunks) {
-    let m;
-    let first = null;
-    const hints = [];
-    while ((m = linkRe.exec(chunk))) {
-      if (!first) first = m;
-      try {
-        hints.push(decodeURIComponent(m[4].replace(/\+/g, ' ')));
-      } catch {}
-    }
-    linkRe.lastIndex = 0;
-    if (!first) continue;
-    const id = first[2];
-    const titleM = chunk.match(/class="news-title">\s*<a[^>]*>([\s\S]*?)<\/a>/);
-    const title = titleM ? stripTags(titleM[1]) : '';
-    if (!title) continue;
-    const timeM = chunk.match(/class="post_time">([^<]+)</);
-    const sumM = chunk.match(/class="news_content[^"]*"[^>]*>[\s\S]*?<p>([\s\S]*?)<\/p>/);
-    const prev = byId.get(id);
-    if (prev) {
-      prev.hints.push(...hints);
-      continue;
-    }
-    byId.set(id, {
-      title,
-      url: decodeEntities(first[1]),
-      summary: sumM ? summarize(sumM[1]) : '',
-      image: firstImg(chunk),
-      // 頁面時間為台灣時間
-      publishedAt: timeM ? parseDate(timeM[1].trim().replace(' ', 'T') + ':00+08:00') : 0,
-      hints,
-    });
-  }
-  return [...byId.values()];
-}
-
 /** 從文章頁 HTML 抓 og:image */
 export function findOgImage(html) {
   const m =
@@ -176,4 +135,4 @@ export function findOgImage(html) {
   return m ? decodeEntities(m[1]) : '';
 }
 
-export const PARSERS = { rss: parseRss, newsmap: parseNewsSitemap, taiwanhot: parseTaiwanHot };
+export const PARSERS = { rss: parseRss, newsmap: parseNewsSitemap };

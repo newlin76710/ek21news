@@ -176,11 +176,16 @@ export async function saveRows(db, rows, now = Date.now()) {
   return written;
 }
 
+// 只用 RSS 內容的來源：不抓對方網站補圖或擷取全文
+const RSS_ONLY = SOURCES.filter((s) => s.rssOnly).map((s) => s.id);
+export const isRssOnly = (sourceId) => RSS_ONLY.includes(sourceId);
+
 /** 替沒有圖片的新文章補 og:image（東森、自由時報的 feed 不附圖） */
 export async function enrichImages(db, limit = 15) {
   const { results } = await db
     .prepare(
       `SELECT id, url FROM articles WHERE image IS NULL AND img_tried = 0 AND published_at > ?1
+         AND source NOT IN (${RSS_ONLY.map((id) => `'${id}'`).join(',') || "''"})
        ORDER BY published_at DESC LIMIT ?2`,
     )
     .bind(Date.now() - 2 * DAY, limit)
@@ -253,7 +258,7 @@ export async function prefillContent(db, limit = 6) {
   const now = Date.now();
   const { results } = await db
     .prepare(
-      `SELECT id, url, summary, content FROM articles
+      `SELECT id, url, source, summary, content FROM articles
        WHERE content_status = 0
           OR (content_status = 1 AND published_at > ?1 AND content_at < ?2 AND length(content) < ?3)
           OR (content_status = 2 AND published_at > ?4 AND content_at < ?5)
@@ -261,7 +266,7 @@ export async function prefillContent(db, limit = 6) {
     )
     .bind(now - REFRESH_WINDOW, now - REFRESH_EVERY, SHORT_CONTENT, now - RETRY_WINDOW, now - RETRY_EVERY, limit * 3)
     .all();
-  const todo = results.filter((r) => ruleFor(r.url)).slice(0, limit);
+  const todo = results.filter((r) => !isRssOnly(r.source) && ruleFor(r.url)).slice(0, limit);
   const got = await Promise.all(todo.map((r) => fetchContent(db, r)));
   return { tried: todo.length, found: got.filter(Boolean).length };
 }

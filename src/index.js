@@ -1,5 +1,5 @@
 import { BASE, CATEGORIES, CATEGORY_MAP, EXCERPT_CHARS, SOURCE_MAP, SUBDOMAIN_TO_APEX } from './config.js';
-import { JOBS, fetchContent, jobsFor, needsRefresh, runJob, twDay } from './ingest.js';
+import { JOBS, fetchContent, isRssOnly, jobsFor, needsRefresh, runJob, twDay } from './ingest.js';
 import { excerptHtml, extractFromUrl } from './extract.js';
 import { card, dayLabel, empty, esc, layout, listItem, pager, row, sectionHead, sidebar } from './render.js';
 
@@ -209,8 +209,8 @@ async function articlePage(env, url, id, ctx) {
   const a = await q(env, `SELECT ${COLS}, content, content_status, content_at FROM articles WHERE id = ?1`, id).first();
   // 文章不存在（例如超過保存期限被清掉）→ 回首頁
   if (!a) return redirect(`${BASE}/`);
-  // 還沒擷取過全文的文章，第一次被打開時即時擷取並存檔
-  if (a.content_status === 0 || needsRefresh(a)) {
+  // 還沒擷取過全文的文章，第一次被打開時即時擷取並存檔（只用 RSS 內容的來源不抓原網站）
+  if (!isRssOnly(a.source) && (a.content_status === 0 || needsRefresh(a))) {
     const job = settle(fetchContent(env.DB, a), null);
     const got = await Promise.race([job, new Promise((r) => setTimeout(() => r(undefined), LIVE_FETCH_BUDGET))]);
     if (got === undefined) ctx?.waitUntil(job);

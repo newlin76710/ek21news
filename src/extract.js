@@ -33,14 +33,6 @@ const RULES = [
     caption: [],
   },
   {
-    host: /(^|\.)taiwanhot\.net$/,
-    root: 'div.news_content',
-    text: ['div.news_content p', 'div.news_content h2', 'div.news_content h3'],
-    img: ['div.news_content img'],
-    caption: [],
-    stop: /^更多新聞推薦/,
-  },
-  {
     host: /(^|\.)kanfb\.com$/,
     root: 'div.entry-content',
     text: kids('div.entry-content', ['p', 'h2', 'h3', 'ul > li', 'ol > li']),
