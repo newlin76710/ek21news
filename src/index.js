@@ -23,13 +23,16 @@ async function home(env) {
   const [heroRows, side, perCat] = await Promise.all([
     all(env, `SELECT ${COLS} FROM articles WHERE image IS NOT NULL AND published_at > ?1 ORDER BY published_at DESC LIMIT 40`, Date.now() - 86400_000),
     latest(env, 15),
-    all(
-      env,
-      `SELECT ${COLS} FROM (
-         SELECT *, ROW_NUMBER() OVER (PARTITION BY category ORDER BY (image IS NULL), published_at DESC) AS rn
-         FROM articles WHERE published_at > ?1
-       ) WHERE rn <= 7 ORDER BY published_at DESC`,
-      since,
+    // 每個分類走索引只讀最新 20 篇，再挑有圖的前 7 篇。
+    // 不要用視窗函式掃過三天內所有文章：每次數千列，會很快用完 D1 免費方案每天 500 萬列的讀取額度
+    env.DB.batch(
+      CATEGORIES.map((c) =>
+        q(env, `SELECT ${COLS} FROM articles WHERE category = ?1 AND published_at > ?2 ORDER BY published_at DESC LIMIT 20`, c.slug, since),
+      ),
+    ).then((res) =>
+      res
+        .flatMap((r) => r.results.sort((a, b) => (a.image ? 0 : 1) - (b.image ? 0 : 1) || b.published_at - a.published_at).slice(0, 7))
+        .sort((a, b) => b.published_at - a.published_at),
     ),
   ]);
 
@@ -445,14 +448,14 @@ export default {
       if (String(e.message || e).includes('no such table')) {
         return new Response('資料庫尚未初始化，請執行：npm run db:init', { status: 503, headers: { 'content-type': 'text/plain; charset=utf-8' } });
       }
-      // 機器可讀的輸出照實回報錯誤；網頁則不讓讀者看到錯誤：先回首頁，首頁也失敗時顯示會自動重試的頁面
+      // 機器可讀的輸出照實回報錯誤；網頁則不讓讀者看到錯誤：先回首頁，首頁也失敗時顯示會自動重試的頁面（間隔拉長，避免大量讀者一起重試）
       if (/^\/(api|admin)\/|\.xml$|^\/rss$|^\/robots\.txt$/.test(path)) {
         return new Response('伺服器錯誤', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
       }
       if (path !== '/') return redirect(`${BASE}/`);
       return layout(env, {
         title: '新聞整理中',
-        body: `${empty('新聞正在更新中，頁面將自動重新整理…')}<script>setTimeout(function(){location.reload()},5000)</script>`,
+        body: `${empty('新聞正在更新中，頁面將自動重新整理…')}<script>setTimeout(function(){location.reload()},60000)</script>`,
         status: 503,
       });
     }
