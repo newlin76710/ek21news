@@ -21,11 +21,13 @@ CREATE TABLE IF NOT EXISTS articles (
 CREATE INDEX IF NOT EXISTS idx_articles_pub ON articles (published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_cat ON articles (category, published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_articles_src ON articles (source, published_at DESC);
-CREATE INDEX IF NOT EXISTS idx_articles_day ON articles (day, published_at DESC);
 
-CREATE TABLE IF NOT EXISTS runs (
-  id    INTEGER PRIMARY KEY AUTOINCREMENT,
-  at    INTEGER NOT NULL,
-  job   TEXT NOT NULL,
-  stats TEXT
+-- 預先整理好的資料（front：首頁／側欄／每日篇數；meta：排程用），見 src/state.js
+CREATE TABLE IF NOT EXISTS state (
+  k TEXT PRIMARY KEY,
+  v TEXT NOT NULL
 );
+
+-- 舊版的索引與排程紀錄表，已不使用
+DROP INDEX IF EXISTS idx_articles_day;
+DROP TABLE IF EXISTS runs;

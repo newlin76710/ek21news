@@ -2,6 +2,7 @@ import { SOURCES } from './config.js';
 import { classify } from './classify.js';
 import { PARSERS, findOgImage } from './parse.js';
 import { extractFromFragment, extractFromUrl, ruleFor } from './extract.js';
+import { addTodo, buildState, loadState, mergeItems, patchItem, saveState } from './state.js';
 
 const UA = 'Mozilla/5.0 (compatible; ek21news-bot/1.0; +https://ek21.com/news/)';
 const HOUR = 3600_000;
@@ -121,91 +122,10 @@ export async function collectSource(source, now = Date.now(), feeds = source.fee
   return { rows: [...rows.values()], errors };
 }
 
-/** RSS 附全文的文章：只替資料庫裡還沒有全文的整理內文，避免每次排程重複處理 */
-async function fillContentFromFeed(db, rows) {
-  const candidates = rows.filter((r) => r.rawContent);
-  const done = new Set();
-  for (let i = 0; i < candidates.length; i += 90) {
-    const ids = candidates.slice(i, i + 90).map((r) => r.id);
-    const { results } = await db
-      .prepare(`SELECT id FROM articles WHERE content_status = 1 AND id IN (${ids.map((_, j) => `?${j + 1}`).join(',')})`)
-      .bind(...ids)
-      .all();
-    for (const r of results) done.add(r.id);
-  }
-  for (const r of candidates) {
-    if (done.has(r.id)) continue;
-    try {
-      r.content = await extractFromFragment(r.rawContent, r.url);
-    } catch {}
-  }
-}
-
-export async function saveRows(db, rows, now = Date.now()) {
-  await fillContentFromFeed(db, rows);
-  const stmt = db.prepare(
-    `INSERT INTO articles (id, url, title, summary, image, source, category, raw_category, published_at, fetched_at, day, content, content_status, content_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?13, CASE WHEN ?13 IS NULL THEN 0 ELSE 1 END, CASE WHEN ?13 IS NULL THEN 0 ELSE ?10 END)
-     ON CONFLICT(id) DO UPDATE SET
-       title = excluded.title,
-       summary = COALESCE(excluded.summary, articles.summary),
-       image = COALESCE(articles.image, excluded.image),
-       category = CASE WHEN ?12 = 1 THEN excluded.category ELSE articles.category END,
-       raw_category = CASE WHEN ?12 = 1 THEN excluded.raw_category ELSE articles.raw_category END,
-       content_at = CASE WHEN articles.content IS NULL AND excluded.content IS NOT NULL THEN excluded.content_at ELSE articles.content_at END,
-       content = COALESCE(articles.content, excluded.content),
-       content_status = CASE WHEN articles.content IS NOT NULL THEN articles.content_status
-                             WHEN excluded.content IS NOT NULL THEN 1 ELSE articles.content_status END
-     -- 內容沒變就不寫：D1 免費方案每天只能寫 10 萬列，每次排程重寫整份 RSS 會很快用完
-     WHERE articles.title IS NOT excluded.title
-        OR (excluded.summary IS NOT NULL AND articles.summary IS NOT excluded.summary)
-        OR (articles.image IS NULL AND excluded.image IS NOT NULL)
-        OR (?12 = 1 AND (articles.category IS NOT excluded.category OR articles.raw_category IS NOT excluded.raw_category))
-        OR (articles.content IS NULL AND excluded.content IS NOT NULL)`,
-  );
-  let written = 0;
-  for (let i = 0; i < rows.length; i += 50) {
-    const batch = rows
-      .slice(i, i + 50)
-      .map((r) =>
-        stmt.bind(r.id, r.url, r.title, r.summary, r.image, r.source, r.category, r.raw_category, r.published_at, now, r.day, r.strong, r.content || null),
-      );
-    const res = await db.batch(batch);
-    written += res.reduce((n, x) => n + (x.meta?.changes || 0), 0);
-  }
-  return written;
-}
-
 // 只用 RSS 內容的來源：不抓對方網站補圖或擷取全文
 const RSS_ONLY = SOURCES.filter((s) => s.rssOnly).map((s) => s.id);
 export const isRssOnly = (sourceId) => RSS_ONLY.includes(sourceId);
 
-/** 替沒有圖片的新文章補 og:image（東森、自由時報的 feed 不附圖） */
-export async function enrichImages(db, limit = 15) {
-  const { results } = await db
-    .prepare(
-      `SELECT id, url FROM articles WHERE image IS NULL AND img_tried = 0 AND published_at > ?1
-         AND source NOT IN (${RSS_ONLY.map((id) => `'${id}'`).join(',') || "''"})
-       ORDER BY published_at DESC LIMIT ?2`,
-    )
-    .bind(Date.now() - 2 * DAY, limit)
-    .all();
-  let found = 0;
-  const updates = await Promise.all(
-    results.map(async (r) => {
-      let image = null;
-      try {
-        image = tuneImage('', findOgImage(await fetchText(r.url, { timeout: 6000, maxBytes: 96 * 1024 })));
-      } catch {}
-      if (image) found++;
-      return db.prepare('UPDATE articles SET image = ?1, img_tried = 1 WHERE id = ?2').bind(image, r.id);
-    }),
-  );
-  if (updates.length) await db.batch(updates);
-  return { tried: results.length, found };
-}
-
-/** 抓文章頁、擷取全文並存檔。回傳整理好的 HTML，失敗回傳 null */
 // 即時新聞剛發布時常只有一兩段，之後才補完：發布 6 小時內、內容偏短的文章，
 // 距上次擷取超過 20 分鐘就重抓一次
 const REFRESH_WINDOW = 6 * HOUR;
@@ -253,31 +173,144 @@ export async function fetchContent(db, article) {
   return content || article.content || null;
 }
 
-/** 預先替最新文章擷取全文（以及重抓剛發布的短內容），讓讀者打開時不必等待 */
-export async function prefillContent(db, limit = 6) {
-  const now = Date.now();
-  const { results } = await db
-    .prepare(
-      `SELECT id, url, source, summary, content FROM articles
-       WHERE content_status = 0
-          OR (content_status = 1 AND published_at > ?1 AND content_at < ?2 AND length(content) < ?3)
-          OR (content_status = 2 AND published_at > ?4 AND content_at < ?5)
-       ORDER BY published_at DESC LIMIT ?6`,
-    )
-    .bind(now - REFRESH_WINDOW, now - REFRESH_EVERY, SHORT_CONTENT, now - RETRY_WINDOW, now - RETRY_EVERY, limit * 3)
-    .all();
-  const todo = results.filter((r) => !isRssOnly(r.source) && ruleFor(r.url)).slice(0, limit);
-  const got = await Promise.all(todo.map((r) => fetchContent(db, r)));
-  return { tried: todo.length, found: got.filter(Boolean).length };
+// 排程每次都會拿到整份 feed，其中絕大多數是已存過的文章。只寫新文章：
+// 比這個工作（來源或拆開的 feed）抓到的最新文章早 NEW_MARGIN 以上的直接略過，其餘先比對上次看過的 id，
+// 沒看過的才查資料庫確認，所以每次排程通常只讀寫個位數的列
+const NEW_MARGIN = 6 * HOUR;
+
+/** 挑出資料庫裡還沒有的文章，寫入並更新 state。回傳寫入篇數 */
+export async function saveRows(db, st, job, source, rows, now = Date.now()) {
+  const cutoff = (st.meta.newest[job] || 0) - NEW_MARGIN;
+  const seen = new Set(st.meta.seen[job] || []);
+  const unknown = rows.filter((r) => r.published_at >= cutoff && !seen.has(r.id));
+  const exists = new Set();
+  for (let i = 0; i < unknown.length; i += 90) {
+    const ids = unknown.slice(i, i + 90).map((r) => r.id);
+    const { results } = await db
+      .prepare(`SELECT id FROM articles WHERE id IN (${ids.map((_, j) => `?${j + 1}`).join(',')})`)
+      .bind(...ids)
+      .all();
+    for (const r of results) exists.add(r.id);
+  }
+  const fresh = unknown.filter((r) => !exists.has(r.id));
+  // RSS 附全文的文章（引新聞、台灣好新聞），寫入時一併存好全文
+  for (const r of fresh) {
+    if (!r.rawContent) continue;
+    try {
+      r.content = await extractFromFragment(r.rawContent, r.url);
+    } catch {}
+  }
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO articles (id, url, title, summary, image, source, category, raw_category, published_at, fetched_at, day, content, content_status, content_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CASE WHEN ?12 IS NULL THEN 0 ELSE 1 END, CASE WHEN ?12 IS NULL THEN 0 ELSE ?10 END)`,
+  );
+  let written = 0;
+  for (let i = 0; i < fresh.length; i += 50) {
+    const res = await db.batch(
+      fresh
+        .slice(i, i + 50)
+        .map((r) => stmt.bind(r.id, r.url, r.title, r.summary, r.image, r.source, r.category, r.raw_category, r.published_at, now, r.day, r.content || null)),
+    );
+    written += res.reduce((n, x) => n + (x.meta?.changes || 0), 0);
+  }
+
+  const { front, meta } = st;
+  if (fresh.length) {
+    mergeItems(front, fresh);
+    for (const r of fresh) {
+      front.days[r.day] = (front.days[r.day] || 0) + 1;
+      if (r.published_at > (meta.newest[job] || 0)) meta.newest[job] = r.published_at;
+    }
+    if (!source.rssOnly) {
+      addTodo(
+        meta,
+        fresh
+          .map((r) => ({ id: r.id, url: r.url, p: r.published_at, img: r.image ? 0 : 1, c: !r.content && ruleFor(r.url) ? 1 : 0, n: 0 }))
+          .filter((t) => t.img || t.c),
+      );
+    }
+  }
+  // 記下這次 feed 裡的文章，下次不必再查資料庫；有查過資料庫才需要更新
+  if (unknown.length) meta.seen[job] = rows.filter((r) => r.published_at >= cutoff).map((r) => r.id);
+  await saveState(db, st, { front: fresh.length > 0, meta: unknown.length > 0 });
+  return written;
 }
 
-export async function cleanup(db, retentionDays) {
+/** 替沒有圖片的新文章補 og:image（東森、自由時報的 feed 不附圖）。只處理待辦清單裡的文章，不掃文章表 */
+export async function enrichImages(db, st, limit = 15) {
+  const now = Date.now();
+  const todo = st.meta.todo.filter((t) => t.img && t.p > now - 2 * DAY).slice(0, limit);
+  let found = 0;
+  const updates = [];
+  await Promise.all(
+    todo.map(async (t) => {
+      t.img = 0;
+      let image = null;
+      try {
+        image = tuneImage('', findOgImage(await fetchText(t.url, { timeout: 6000, maxBytes: 96 * 1024 })));
+      } catch {}
+      if (!image) return;
+      found++;
+      patchItem(st.front, t.id, { image });
+      updates.push(db.prepare('UPDATE articles SET image = ?1 WHERE id = ?2').bind(image, t.id));
+    }),
+  );
+  if (updates.length) await db.batch(updates);
+  return { tried: todo.length, found };
+}
+
+/** 下次該重抓全文的時間；不需要再抓回傳 null */
+function nextTry(a, now) {
+  const age = now - a.published_at;
+  if (a.content_status === 0) return now;
+  if (a.content_status === 2) return age < RETRY_WINDOW ? a.content_at + RETRY_EVERY : null;
+  return age < REFRESH_WINDOW && (a.content || '').length < SHORT_CONTENT ? a.content_at + REFRESH_EVERY : null;
+}
+
+/** 預先替最新文章擷取全文（以及重抓剛發布的短內容），讓讀者打開時不必等待。只處理待辦清單 */
+export async function prefillContent(db, st, limit = 6) {
+  const now = Date.now();
+  const todo = st.meta.todo.filter((t) => t.c && t.n <= now).slice(0, limit);
+  if (!todo.length) return { tried: 0, found: 0 };
+  const ids = todo.map((t) => t.id);
+  const { results } = await db
+    .prepare(
+      `SELECT id, url, summary, content, content_status, content_at, published_at FROM articles
+       WHERE id IN (${ids.map((_, j) => `?${j + 1}`).join(',')})`,
+    )
+    .bind(...ids)
+    .all();
+  const rows = new Map(results.map((r) => [r.id, r]));
+  let tried = 0;
+  let found = 0;
+  await Promise.all(
+    todo.map(async (t) => {
+      const a = rows.get(t.id);
+      // 文章已被刪除，或讀者打開時已經擷取過了
+      let next = a ? nextTry(a, now) : null;
+      if (a && next !== null && next <= now) {
+        tried++;
+        const hadSummary = a.summary;
+        const got = await fetchContent(db, a);
+        if (got && got !== a.content) found++;
+        if (a.summary && a.summary !== hadSummary) patchItem(st.front, a.id, { summary: a.summary });
+        const after = got ? { ...a, content: got, content_status: 1 } : { ...a, content_status: a.content ? a.content_status : 2 };
+        next = nextTry({ ...after, content_at: now }, now);
+      }
+      if (next === null) t.c = 0;
+      else t.n = next;
+    }),
+  );
+  return { tried, found };
+}
+
+export async function cleanup(db, st, retentionDays) {
   const cutoff = Date.now() - retentionDays * DAY;
-  const r = await db.batch([
-    db.prepare('DELETE FROM articles WHERE published_at < ?1').bind(cutoff),
-    db.prepare('DELETE FROM runs WHERE at < ?1').bind(Date.now() - 7 * DAY),
-  ]);
-  return r[0].meta?.changes || 0;
+  const r = await db.prepare('DELETE FROM articles WHERE published_at < ?1').bind(cutoff).run();
+  const oldest = twDay(cutoff);
+  for (const d of Object.keys(st.front.days)) if (d < oldest) delete st.front.days[d];
+  st.meta.todo = st.meta.todo.filter((t) => t.img || t.c);
+  return r.meta?.changes || 0;
 }
 
 // 排程工作清單：每個來源一個工作；feed 較大的來源（splitFeeds）每個 feed 各自一個工作，
@@ -290,26 +323,39 @@ export const JOBS = [
 // 排程間隔（分鐘），需與 wrangler.toml 的 crons 一致
 const CRON_MINUTES = 3;
 
+/** 讀取 state，不存在時從文章表重建並存檔 */
+export async function getState(db, rebuild = false) {
+  let st = rebuild ? null : await loadState(db);
+  if (!st) {
+    st = await buildState(db, { ruleFor, isRssOnly, splitSources: SOURCES.filter((s) => s.splitFeeds).map((s) => s.id) });
+    await saveState(db, st, { front: true, meta: true });
+  }
+  return st;
+}
+
+// 執行結果只印在 log（wrangler tail／Cloudflare 後台可看），不寫資料庫
 export async function runJob(env, job) {
   const now = Date.now();
-  const started = Date.now();
+  const st = await getState(env.DB);
   let stats;
   if (job === 'maintenance') {
-    const images = await enrichImages(env.DB);
-    const content = await prefillContent(env.DB);
-    const deleted = await cleanup(env.DB, Number(env.RETENTION_DAYS || 60));
-    stats = { images, content, deleted };
+    const before = st.meta.todo.length;
+    const images = await enrichImages(env.DB, st);
+    const content = await prefillContent(env.DB, st);
+    const deleted = await cleanup(env.DB, st, Number(env.RETENTION_DAYS || 60));
+    const touched = images.tried > 0 || content.tried > 0 || st.meta.todo.length !== before;
+    await saveState(env.DB, st, { front: images.found > 0 || content.found > 0 || deleted > 0, meta: touched || deleted > 0 });
+    stats = { images, content, deleted, todo: st.meta.todo.length };
   } else {
     const [id, feedIndex] = job.split('#');
     const source = SOURCES.find((s) => s.id === id);
     const feeds = feedIndex === undefined ? source?.feeds : source?.feeds.slice(+feedIndex, +feedIndex + 1);
     if (!source || !feeds?.length) throw new Error(`unknown job ${job}`);
     const { rows, errors } = await collectSource(source, now, feeds);
-    const written = await saveRows(env.DB, rows, now);
+    const written = await saveRows(env.DB, st, job, source, rows, now);
     stats = { fetched: rows.length, written, errors };
   }
-  stats.ms = Date.now() - started;
-  await env.DB.prepare('INSERT INTO runs (at, job, stats) VALUES (?1, ?2, ?3)').bind(now, job, JSON.stringify(stats)).run();
+  stats.ms = Date.now() - now;
   return stats;
 }
 

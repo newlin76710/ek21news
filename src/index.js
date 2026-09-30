@@ -1,9 +1,11 @@
 import { BASE, CATEGORIES, CATEGORY_MAP, EXCERPT_CHARS, SOURCE_MAP, SUBDOMAIN_TO_APEX } from './config.js';
-import { JOBS, fetchContent, isRssOnly, jobsFor, needsRefresh, runJob, twDay } from './ingest.js';
-import { excerptHtml, extractFromUrl } from './extract.js';
+import { JOBS, fetchContent, getState, isRssOnly, jobsFor, needsRefresh, runJob, twDay } from './ingest.js';
+import { excerptHtml, extractFromUrl, ruleFor } from './extract.js';
+import { loadFront } from './state.js';
 import { card, dayLabel, empty, esc, layout, listItem, pager, row, sectionHead, sidebar } from './render.js';
 
 const PER_PAGE = 24;
+const SEARCH_ROWS = 2000;
 const COLS = 'id, url, title, summary, image, source, category, published_at';
 
 const q = (env, sql, ...args) => env.DB.prepare(sql).bind(...args);
@@ -16,25 +18,29 @@ function pageNum(url) {
 
 const latest = (env, n = 12) => all(env, `SELECT ${COLS} FROM articles ORDER BY published_at DESC LIMIT ?1`, n);
 
+// 首頁、側欄、相關新聞用排程預先整理好的 front（讀 1 列），不查文章表。
+// 還沒有 front 時（剛部署、排程還沒跑）回傳空資料，頁面照樣能顯示
+async function front(env) {
+  return (await settle(loadFront(env.DB), null)) || { items: [], days: {} };
+}
+const sideOf = (f, n = 10) => f.items.slice(0, n);
+
 // ─── 頁面 ───────────────────────────────────────────────────────────
 
 async function home(env) {
-  const since = Date.now() - 3 * 86400_000;
-  const [heroRows, side, perCat] = await Promise.all([
-    all(env, `SELECT ${COLS} FROM articles WHERE image IS NOT NULL AND published_at > ?1 ORDER BY published_at DESC LIMIT 40`, Date.now() - 86400_000),
-    latest(env, 15),
-    // 每個分類走索引只讀最新 20 篇，再挑有圖的前 7 篇。
-    // 不要用視窗函式掃過三天內所有文章：每次數千列，會很快用完 D1 免費方案每天 500 萬列的讀取額度
-    env.DB.batch(
-      CATEGORIES.map((c) =>
-        q(env, `SELECT ${COLS} FROM articles WHERE category = ?1 AND published_at > ?2 ORDER BY published_at DESC LIMIT 20`, c.slug, since),
-      ),
-    ).then((res) =>
-      res
-        .flatMap((r) => r.results.sort((a, b) => (a.image ? 0 : 1) - (b.image ? 0 : 1) || b.published_at - a.published_at).slice(0, 7))
-        .sort((a, b) => b.published_at - a.published_at),
-    ),
-  ]);
+  const f = await front(env);
+  const now = Date.now();
+  const since = now - 3 * 86400_000;
+  const heroRows = f.items.filter((a) => a.image && a.published_at > now - 86400_000).slice(0, 40);
+  const side = sideOf(f, 15);
+  // 每個分類取三天內最新 20 篇，有圖的優先，前 7 篇
+  const perCat = CATEGORIES.flatMap((c) =>
+    f.items
+      .filter((a) => a.category === c.slug && a.published_at > since)
+      .slice(0, 20)
+      .sort((a, b) => (a.image ? 0 : 1) - (b.image ? 0 : 1) || b.published_at - a.published_at)
+      .slice(0, 7),
+  ).sort((a, b) => b.published_at - a.published_at);
 
   // 頭條：每個來源輪流挑一則，避免版面被單一來源佔滿
   const hero = [];
@@ -70,17 +76,17 @@ async function home(env) {
   return layout(env, { body, active: 'home' });
 }
 
-async function listPage(env, url, { title, subtitle, where, args, active, base, pre = '' }) {
+async function listPage(env, url, { title, subtitle, where, args, active, base, pre = '', from = 'articles' }) {
   const page = pageNum(url);
   const [rows, side] = await Promise.all([
     all(
       env,
-      `SELECT ${COLS} FROM articles ${where} ORDER BY published_at DESC LIMIT ?${args.length + 1} OFFSET ?${args.length + 2}`,
+      `SELECT ${COLS} FROM ${from} ${where} ORDER BY published_at DESC LIMIT ?${args.length + 1} OFFSET ?${args.length + 2}`,
       ...args,
       PER_PAGE + 1,
       (page - 1) * PER_PAGE,
     ),
-    active === 'latest' ? [] : latest(env, 10),
+    active === 'latest' ? [] : front(env).then((f) => sideOf(f)),
   ]);
   const hasMore = rows.length > PER_PAGE;
   const items = rows.slice(0, PER_PAGE);
@@ -132,19 +138,26 @@ async function searchPage(env, url) {
     title: `「${term}」的搜尋結果`,
     where: "WHERE title LIKE ?1 ESCAPE '\\' OR summary LIKE ?1 ESCAPE '\\'",
     args: [like],
+    // 模糊搜尋無法用索引，只搜最新的 SEARCH_ROWS 篇，避免每次搜尋掃過整張表
+    from: `(SELECT ${COLS} FROM articles ORDER BY published_at DESC LIMIT ${SEARCH_ROWS})`,
     base: `${BASE}/search`,
   });
 }
 
 async function dailyIndex(env) {
-  const days = await all(env, 'SELECT day, COUNT(*) AS n FROM articles GROUP BY day ORDER BY day DESC LIMIT 60');
+  const f = await front(env);
+  const days = Object.entries(f.days)
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+    .slice(0, 60)
+    .map(([day, n]) => ({ day, n }));
   const body = `<div class="page-h"><h1>每日新聞</h1><p>每天自動整理當日新聞，依分類編成一份日報。</p></div>
 ${days.length ? `<div class="days">${days.map((d) => `<a href="${BASE}/daily/${d.day}"><b>${esc(dayLabel(d.day))}</b><span>共 ${d.n} 則新聞</span></a>`).join('')}</div>` : empty()}`;
   return layout(env, { title: '每日新聞', body, active: 'daily' });
 }
 
 async function dailyPage(env, day) {
-  const rows = await all(env, `SELECT ${COLS} FROM articles WHERE day = ?1 ORDER BY published_at DESC LIMIT 2000`, day);
+  const [start, end] = dayRange(day);
+  const rows = await all(env, `SELECT ${COLS} FROM articles WHERE published_at >= ?1 AND published_at < ?2 ORDER BY published_at DESC LIMIT 2000`, start, end);
   if (!rows.length) return notFound(env, '這一天沒有新聞資料。');
   const groups = Object.fromEntries(CATEGORIES.map((c) => [c.slug, []]));
   for (const a of rows) groups[a.category]?.push(a);
@@ -168,6 +181,12 @@ ${toc}${sections}<nav class="pager"><a href="${BASE}/daily/${prev}">‹ 前一�
   return layout(env, { title: `${dayLabel(day)} 新聞日報`, description: `${dayLabel(day)}新聞彙整，共 ${rows.length} 則。`, body, active: 'daily' });
 }
 
+/** 台灣時間某一天的起訖時間（毫秒），用 published_at 的索引查詢 */
+function dayRange(day) {
+  const start = Date.parse(`${day}T00:00:00+08:00`);
+  return [start, start + 86400_000];
+}
+
 const redirect = (to) => new Response(null, { status: 302, headers: { location: to, 'cache-control': 'no-store' } });
 const settle = (p, fallback) => p.catch((e) => (console.error(e), fallback));
 
@@ -181,18 +200,7 @@ function bigrams(s) {
 
 /** 找一篇有內容可看的相似新聞（同分類、標題最相近）；找不到回傳 null */
 async function similarArticle(env, a) {
-  const rows = await settle(
-    all(
-      env,
-      `SELECT id, title FROM articles
-       WHERE category = ?1 AND id != ?2 AND (content_status = 1 OR summary IS NOT NULL)
-       ORDER BY ABS(published_at - ?3) LIMIT 60`,
-      a.category,
-      a.id,
-      a.published_at,
-    ),
-    [],
-  );
+  const rows = (await front(env)).items.filter((r) => r.category === a.category && r.id !== a.id && r.summary);
   if (!rows.length) return null;
   const mine = bigrams(a.title);
   let best = rows[0];
@@ -208,12 +216,18 @@ async function similarArticle(env, a) {
 // 即時擷取全文最多等這麼久，逾時先顯示現有內容，擷取在背景繼續完成並存檔
 const LIVE_FETCH_BUDGET = 6000;
 
+/** 全文不會再重抓（RSS 內容來源、或已過了重抓期間）的文章 */
+function stable(a, now = Date.now()) {
+  if (isRssOnly(a.source) || !ruleFor(a.url)) return true;
+  return a.content_status === 1 && now - a.published_at > 24 * 3600_000;
+}
+
 async function articlePage(env, url, id, ctx) {
   const a = await q(env, `SELECT ${COLS}, content, content_status, content_at FROM articles WHERE id = ?1`, id).first();
   // 文章不存在（例如超過保存期限被清掉）→ 回首頁
   if (!a) return redirect(`${BASE}/`);
   // 還沒擷取過全文的文章，第一次被打開時即時擷取並存檔（只用 RSS 內容的來源不抓原網站）
-  if (!isRssOnly(a.source) && (a.content_status === 0 || needsRefresh(a))) {
+  if (!isRssOnly(a.source) && ruleFor(a.url) && (a.content_status === 0 || needsRefresh(a))) {
     const job = settle(fetchContent(env.DB, a), null);
     const got = await Promise.race([job, new Promise((r) => setTimeout(() => r(undefined), LIVE_FETCH_BUDGET))]);
     if (got === undefined) ctx?.waitUntil(job);
@@ -225,10 +239,9 @@ async function articlePage(env, url, id, ctx) {
     const alt = await similarArticle(env, a);
     return redirect(alt ? `${BASE}/article/${alt}` : `${BASE}/`);
   }
-  const [related, side] = await Promise.all([
-    settle(all(env, `SELECT ${COLS} FROM articles WHERE category = ?1 AND id != ?2 ORDER BY published_at DESC LIMIT 6`, a.category, a.id), []),
-    settle(latest(env, 10), []),
-  ]);
+  const f = await front(env);
+  const related = f.items.filter((r) => r.category === a.category && r.id !== a.id).slice(0, 6);
+  const side = sideOf(f);
   const c = CATEGORY_MAP[a.category];
   const s = SOURCE_MAP[a.source];
   const published = new Date(a.published_at).toISOString();
@@ -274,6 +287,8 @@ ${related.length ? `<section class="sec" style="margin-top:28px">${sectionHead(`
     description: a.summary || a.title,
     canonical: `${url.origin}${BASE}/article/${a.id}`,
     body,
+    // 內容已經不會再重抓的文章，快取一天
+    sMaxAge: stable(a) ? 86400 : 180,
     head: `<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>${a.image ? `<meta property="og:image" content="${esc(a.image)}">` : ''}`,
   });
 }
@@ -306,7 +321,7 @@ ${rows
 async function sitemap(env, origin) {
   const [rows, days] = await Promise.all([
     all(env, 'SELECT id, published_at FROM articles ORDER BY published_at DESC LIMIT 2000'),
-    all(env, 'SELECT DISTINCT day FROM articles ORDER BY day DESC LIMIT 60'),
+    front(env).then((f) => Object.keys(f.days).sort().reverse().slice(0, 60).map((day) => ({ day }))),
   ]);
   const urls = [
     `${origin}${BASE}/`,
@@ -329,7 +344,10 @@ async function api(env, url) {
   const day = url.searchParams.get('day');
   if (CATEGORY_MAP[cat]) where.push(`category = ?${args.push(cat)}`);
   if (SOURCE_MAP[src]) where.push(`source = ?${args.push(src)}`);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(day || '')) where.push(`day = ?${args.push(day)}`);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(day || '')) {
+    const [start, end] = dayRange(day);
+    where.push(`published_at >= ?${args.push(start)} AND published_at < ?${args.push(end)}`);
+  }
   const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '30', 10) || 30, 1), 200);
   const rows = await all(
     env,
@@ -347,14 +365,18 @@ async function api(env, url) {
 }
 
 async function status(env) {
-  const [counts, runs] = await Promise.all([
-    all(env, 'SELECT source, COUNT(*) AS n, MAX(published_at) AS newest FROM articles GROUP BY source'),
-    all(env, 'SELECT at, job, stats FROM runs ORDER BY at DESC LIMIT 20'),
-  ]);
+  const st = await getState(env.DB);
+  const iso = (t) => (t ? new Date(t).toISOString() : null);
   return Response.json(
     {
-      sources: counts.map((c) => ({ ...c, newest: new Date(c.newest).toISOString() })),
-      runs: runs.map((r) => ({ ...r, at: new Date(r.at).toISOString(), stats: JSON.parse(r.stats || '{}') })),
+      updated: iso(st.front.at),
+      newest: Object.fromEntries(Object.entries(st.meta.newest).map(([k, v]) => [k, iso(v)])),
+      days: st.front.days,
+      todo: {
+        total: st.meta.todo.length,
+        image: st.meta.todo.filter((t) => t.img).length,
+        content: st.meta.todo.filter((t) => t.c).length,
+      },
     },
     { headers: { 'cache-control': 'no-store' } },
   );
@@ -364,6 +386,11 @@ async function refresh(env, url) {
   const token = url.searchParams.get('token');
   if (!env.ADMIN_TOKEN || token !== env.ADMIN_TOKEN) return new Response('forbidden', { status: 403 });
   const job = url.searchParams.get('job') || 'all';
+  // 從文章表重建 state（首頁資料、每日篇數、待辦清單）
+  if (job === 'rebuild') {
+    const st = await getState(env.DB, true);
+    return Response.json({ items: st.front.items.length, days: Object.keys(st.front.days).length, todo: st.meta.todo.length });
+  }
   const jobs = job === 'all' ? JOBS : [job];
   const out = {};
   for (const j of jobs) {

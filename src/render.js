@@ -155,7 +155,7 @@ footer a{color:#fff}footer .cols{display:flex;flex-wrap:wrap;gap:10px 22px;margi
  .card h3{font-size:15px}.card-body{padding:10px}}
 `;
 
-export function layout(env, { title, description, body, active = '', canonical = '', status = 200, head = '' }) {
+export function layout(env, { title, description, body, active = '', canonical = '', status = 200, head = '', sMaxAge = 180 }) {
   const site = env.SITE_NAME || '尋夢新聞';
   const fullTitle = title ? `${title} - ${site}` : `${site} - ${env.SITE_TAGLINE || ''}`;
   const desc = description || `${site}：政治、財經、社會、生活、國際、娛樂、體育、科技、健康、旅遊即時新聞，完整分類、每日自動更新。`;
@@ -202,7 +202,7 @@ ${head}
     status,
     headers: {
       'content-type': 'text/html; charset=utf-8',
-      'cache-control': status === 200 ? 'public, max-age=60, s-maxage=180' : 'no-store',
+      'cache-control': status === 200 ? `public, max-age=60, s-maxage=${sMaxAge}` : 'no-store',
     },
   });
 }
