@@ -165,14 +165,66 @@ ${toc}${sections}<nav class="pager"><a href="${BASE}/daily/${prev}">‹ 前一�
   return layout(env, { title: `${dayLabel(day)} 新聞日報`, description: `${dayLabel(day)}新聞彙整，共 ${rows.length} 則。`, body, active: 'daily' });
 }
 
-async function articlePage(env, url, id) {
+const redirect = (to) => new Response(null, { status: 302, headers: { location: to, 'cache-control': 'no-store' } });
+const settle = (p, fallback) => p.catch((e) => (console.error(e), fallback));
+
+// 標題的二字詞組，用來找相似新聞
+function bigrams(s) {
+  const t = String(s || '').replace(/[^\p{L}\p{N}]+/gu, '');
+  const out = new Set();
+  for (let i = 0; i < t.length - 1; i++) out.add(t.slice(i, i + 2));
+  return out;
+}
+
+/** 找一篇有內容可看的相似新聞（同分類、標題最相近）；找不到回傳 null */
+async function similarArticle(env, a) {
+  const rows = await settle(
+    all(
+      env,
+      `SELECT id, title FROM articles
+       WHERE category = ?1 AND id != ?2 AND (content_status = 1 OR summary IS NOT NULL)
+       ORDER BY ABS(published_at - ?3) LIMIT 60`,
+      a.category,
+      a.id,
+      a.published_at,
+    ),
+    [],
+  );
+  if (!rows.length) return null;
+  const mine = bigrams(a.title);
+  let best = rows[0];
+  let bestScore = -1;
+  for (const r of rows) {
+    let score = 0;
+    for (const g of bigrams(r.title)) if (mine.has(g)) score++;
+    if (score > bestScore) (best = r), (bestScore = score);
+  }
+  return best.id;
+}
+
+// 即時擷取全文最多等這麼久，逾時先顯示現有內容，擷取在背景繼續完成並存檔
+const LIVE_FETCH_BUDGET = 6000;
+
+async function articlePage(env, url, id, ctx) {
   const a = await q(env, `SELECT ${COLS}, content, content_status, content_at FROM articles WHERE id = ?1`, id).first();
-  if (!a) return notFound(env);
+  // 文章不存在（例如超過保存期限被清掉）→ 回首頁
+  if (!a) return redirect(`${BASE}/`);
   // 還沒擷取過全文的文章，第一次被打開時即時擷取並存檔
-  if (a.content_status === 0 || needsRefresh(a)) a.content = await fetchContent(env.DB, a);
+  if (a.content_status === 0 || needsRefresh(a)) {
+    const job = settle(fetchContent(env.DB, a), null);
+    const got = await Promise.race([job, new Promise((r) => setTimeout(() => r(undefined), LIVE_FETCH_BUDGET))]);
+    if (got === undefined) ctx?.waitUntil(job);
+    else if (got) a.content = got;
+  }
+  // 沒有全文也沒有摘要：導到一篇相似的新聞，再不行就回首頁，確保讀者有內容可看
+  const hasText = (a.content || '').replace(/<[^>]+>/g, '').trim().length > 0 || (a.summary || '').trim().length > 0;
+  if (!hasText) {
+    const alt = await similarArticle(env, a);
+    return redirect(alt ? `${BASE}/article/${alt}` : `${BASE}/`);
+  }
   const [related, side] = await Promise.all([
-    all(env, `SELECT ${COLS} FROM articles WHERE category = ?1 AND id != ?2 ORDER BY published_at DESC LIMIT 6`, a.category, a.id),
-    latest(env, 10),
+    settle(all(env, `SELECT ${COLS} FROM articles WHERE category = ?1 AND id != ?2 ORDER BY published_at DESC LIMIT 6`, a.category, a.id), []),
+    settle(latest(env, 10), []),
   ]);
   const c = CATEGORY_MAP[a.category];
   const s = SOURCE_MAP[a.source];
@@ -329,7 +381,7 @@ function sitePath(pathname) {
   return pathname.slice(BASE.length).replace(/\/+$/, '') || '/';
 }
 
-async function route(request, env) {
+async function route(request, env, ctx) {
   const url = new URL(request.url);
   const path = sitePath(url.pathname);
   let m;
@@ -338,7 +390,7 @@ async function route(request, env) {
   if ((m = path.match(/^\/category\/([a-z]+)\/feed\.xml$/)) && CATEGORY_MAP[m[1]]) return feed(env, url.origin, m[1]);
   if ((m = path.match(/^\/category\/([a-z]+)$/))) return categoryPage(env, url, m[1]);
   if ((m = path.match(/^\/source\/([a-z0-9]+)$/))) return sourcePage(env, url, m[1]);
-  if ((m = path.match(/^\/article\/([0-9a-f]{16})$/))) return articlePage(env, url, m[1]);
+  if ((m = path.match(/^\/article\/([0-9a-f]{16})$/))) return articlePage(env, url, m[1], ctx);
   if (path === '/daily') return dailyIndex(env);
   if ((m = path.match(/^\/daily\/(\d{4}-\d{2}-\d{2})$/))) return dailyPage(env, m[1]);
   if (path === '/search') return searchPage(env, url);
@@ -385,7 +437,7 @@ export default {
       if (hit) return hit;
     }
     try {
-      const res = await route(request, env);
+      const res = await route(request, env, ctx);
       if (cacheable && res.status === 200) ctx.waitUntil(cache.put(request, res.clone()));
       return res;
     } catch (e) {
@@ -393,7 +445,16 @@ export default {
       if (String(e.message || e).includes('no such table')) {
         return new Response('資料庫尚未初始化，請執行：npm run db:init', { status: 503, headers: { 'content-type': 'text/plain; charset=utf-8' } });
       }
-      return new Response('伺服器錯誤', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+      // 機器可讀的輸出照實回報錯誤；網頁則不讓讀者看到錯誤：先回首頁，首頁也失敗時顯示會自動重試的頁面
+      if (/^\/(api|admin)\/|\.xml$|^\/rss$|^\/robots\.txt$/.test(path)) {
+        return new Response('伺服器錯誤', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+      }
+      if (path !== '/') return redirect(`${BASE}/`);
+      return layout(env, {
+        title: '新聞整理中',
+        body: `${empty('新聞正在更新中，頁面將自動重新整理…')}<script>setTimeout(function(){location.reload()},5000)</script>`,
+        status: 503,
+      });
     }
   },
 
